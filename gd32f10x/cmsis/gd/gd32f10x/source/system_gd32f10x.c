@@ -72,7 +72,10 @@ OF SUCH DAMAGE.
 //#define __SYSTEM_CLOCK_56M_PLL_HXTAL            (uint32_t)(56000000)
 //#define __SYSTEM_CLOCK_72M_PLL_HXTAL            (uint32_t)(72000000)
 //#define __SYSTEM_CLOCK_96M_PLL_HXTAL            (uint32_t)(96000000)
-#define __SYSTEM_CLOCK_108M_PLL_HXTAL           (uint32_t)(108000000)
+//#define __SYSTEM_CLOCK_108M_PLL_HXTAL           (uint32_t)(108000000)
+/* NOTE: 120 MHz exceeds the datasheet max (108 MHz) for GD32F103; USB needs
+   a 48 MHz USBD clock, which 108 MHz cannot provide (see USBDPS below). */
+#define __SYSTEM_CLOCK_120M_PLL_HXTAL           (uint32_t)(120000000)
 
 /* The following is to prevent Vcore fluctuations caused by frequency switching. 
    It is strongly recommended to include it to avoid issues caused by self-removal. */
@@ -140,6 +143,9 @@ static void system_clock_96m_hxtal(void);
 #elif defined (__SYSTEM_CLOCK_108M_PLL_HXTAL)
 uint32_t SystemCoreClock = __SYSTEM_CLOCK_108M_PLL_HXTAL;
 static void system_clock_108m_hxtal(void);
+#elif defined (__SYSTEM_CLOCK_120M_PLL_HXTAL)
+uint32_t SystemCoreClock = __SYSTEM_CLOCK_120M_PLL_HXTAL;
+static void system_clock_120m_hxtal(void);
 #endif /* __SYSTEM_CLOCK_48M_PLL_IRC8M */
 
 /* configure the system clock */
@@ -169,6 +175,8 @@ static void system_clock_config(void)
     system_clock_96m_hxtal();
 #elif defined (__SYSTEM_CLOCK_108M_PLL_HXTAL)
     system_clock_108m_hxtal();
+#elif defined (__SYSTEM_CLOCK_120M_PLL_HXTAL)
+    system_clock_120m_hxtal();
 
 #elif defined (__SYSTEM_CLOCK_48M_PLL_IRC8M)
     system_clock_48m_irc8m();
@@ -832,6 +840,89 @@ static void system_clock_108m_hxtal(void)
     while(0U == (RCU_CTL & RCU_CTL_PLL1STB)){
     }
 #endif /* GD32F10X_MD and GD32F10X_HD and GD32F10X_XD */
+
+    /* enable PLL */
+    RCU_CTL |= RCU_CTL_PLLEN;
+
+    /* wait until PLL is stable */
+    while(0U == (RCU_CTL & RCU_CTL_PLLSTB)){
+    }
+
+    reg_temp = RCU_CFG0;
+    /* select PLL as system clock */
+    reg_temp &= ~RCU_CFG0_SCS;
+    reg_temp |= RCU_CKSYSSRC_PLL;
+    RCU_CFG0 = reg_temp;
+
+    /* wait until PLL is selected as system clock */
+    while(RCU_SCSS_PLL != (RCU_CFG0 & RCU_CFG0_SCSS)){
+    }
+}
+
+#elif defined (__SYSTEM_CLOCK_120M_PLL_HXTAL)
+/*!
+    \brief      configure the system clock to 120M by PLL which selects HXTAL(MD/HD/XD:8M; CL:25M) as its clock source
+    \param[in]  none
+    \param[out] none
+    \retval     none
+*/
+static void system_clock_120m_hxtal(void)
+{
+    uint32_t timeout   = 0U;
+    uint32_t stab_flag = 0U;
+    __IO uint32_t reg_temp;
+
+    /* enable HXTAL */
+    RCU_CTL |= RCU_CTL_HXTALEN;
+
+    /* wait until HXTAL is stable or the startup time is longer than HXTAL_STARTUP_TIMEOUT */
+    do{
+        timeout++;
+        stab_flag = (RCU_CTL & RCU_CTL_HXTALSTB);
+    }while((0U == stab_flag) && (HXTAL_STARTUP_TIMEOUT != timeout));
+
+    /* if fail */
+    if(0U == (RCU_CTL & RCU_CTL_HXTALSTB)){
+        while(1){
+        }
+    }
+
+    /* HXTAL is stable */
+    /* AHB = SYSCLK */
+    RCU_CFG0 |= RCU_AHB_CKSYS_DIV1;
+    /* APB2 = AHB/1 */
+    RCU_CFG0 |= RCU_APB2_CKAHB_DIV1;
+    /* APB1 = AHB/2 */
+    RCU_CFG0 |= RCU_APB1_CKAHB_DIV2;
+
+#if (defined(GD32F10X_MD) || defined(GD32F10X_HD) || defined(GD32F10X_XD))
+    /* select HXTAL/2 as clock source */
+    RCU_CFG0 &= ~(RCU_CFG0_PLLSEL | RCU_CFG0_PREDV0);
+    RCU_CFG0 |= (RCU_PLLSRC_HXTAL | RCU_CFG0_PREDV0);
+
+    /* CK_PLL = (CK_HXTAL/2) * 30 = 120 MHz */
+    RCU_CFG0 &= ~(RCU_CFG0_PLLMF | RCU_CFG0_PLLMF_4);
+    RCU_CFG0 |= RCU_PLL_MUL30;
+
+#elif defined(GD32F10X_CL)
+    /* CK_PLL = (CK_PREDIV0) * 30 = 120 MHz */ 
+    RCU_CFG0 &= ~(RCU_CFG0_PLLMF | RCU_CFG0_PLLMF_4);
+    RCU_CFG0 |= (RCU_PLLSRC_HXTAL | RCU_PLL_MUL30);
+
+    /* CK_PREDIV0 = (CK_HXTAL)/5 *8 /10 = 4 MHz */ 
+    RCU_CFG1 &= ~(RCU_CFG1_PREDV0SEL | RCU_CFG1_PLL1MF | RCU_CFG1_PREDV1 | RCU_CFG1_PREDV0);
+    RCU_CFG1 |= (RCU_PREDV0SRC_CKPLL1 | RCU_PLL1_MUL8 | RCU_PREDV1_DIV5 | RCU_PREDV0_DIV10);
+
+    /* enable PLL1 */
+    RCU_CTL |= RCU_CTL_PLL1EN;
+    /* wait till PLL1 is ready */
+    while(0U == (RCU_CTL & RCU_CTL_PLL1STB)){
+    }
+#endif /* GD32F10X_MD and GD32F10X_HD and GD32F10X_XD */
+
+    /* USBD clock = CK_PLL/2.5 = 48 MHz */
+    RCU_CFG0 &= ~RCU_CFG0_USBDPSC;
+    RCU_CFG0 |= RCU_CKUSB_CKPLL_DIV2_5;
 
     /* enable PLL */
     RCU_CTL |= RCU_CTL_PLLEN;
